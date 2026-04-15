@@ -1,0 +1,436 @@
+:root {
+    --border: 1px solid #1e2127;
+    --headerH: 88px;
+    /* ✅ shared header height (left + right) */
+    --footerH: 74px;
+    /* ✅ shared footer height (left + right) */
+}
+
+/* ===== Layout ===== */
+.chatgpt-layout {
+    height: 100vh;
+    display: flex;
+    font-family: Arial, sans-serif;
+    background: #0f1115;
+    color: #eaeaea;
+}
+
+.chatgpt-main,
+.chatgpt-messages,
+.msg-row,
+.msg-bubble {
+    min-width: 0;
+}
+
+.chatgpt-messages {
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* ===== Sidebar ===== */
+.chatgpt-sidebar {
+    width: 290px;
+    background: #0b0d10;
+    border-right: var(--border);
+    display: flex;
+    flex-direction: column;
+}
+
+/* ✅ Top header block matches right header height and border line */
+.sidebar-top {
+    height: var(--headerH);
+    padding: 12px 14px;
+    border-bottom: var(--border);
+    box-sizing: border-box;
+
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 10px;
+}
+
+.sidebar-title {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.brand-icon {
+    font-size: 18px;
+    flex: 0 0 auto;
+}
+
+.brand-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ✅ keep same look, only indentation + alignment */
+.new-chat-btn {
+    width: fit-content;
+    max-width: 100%;
+    padding: 10px 16px;
+    border: none;
+    border-radius: 14px;
+    cursor: pointer;
+    background: #2563eb;
+    color: #fff;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+
+    /* centered inside sidebar */
+    margin: 0 auto;
+}
+
+.new-chat-btn:hover {
+    background: #1d4ed8;
+}
+
+.new-chat-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* ✅ unified list region - same indentation + same color */
+.sidebar-list {
+    flex: 1;
+    padding: 14px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ✅ both lines look identical: same padding, same color, same indentation */
+.sidebar-item-btn {
+    width: 100%;
+    text-align: left;
+    padding: 12px 12px;
+    border-radius: 10px;
+    border: 1px solid #232738;
+    background: #0f1115;
+    color: #eaeaea;
+    font-weight: 600;
+    cursor: default;
+}
+
+.sidebar-item-btn:disabled {
+    opacity: 1;
+    /* keep same color, no faded look */
+}
+
+/* ✅ Footer matches right composer height and border line */
+.sidebar-footer {
+    height: var(--footerH);
+    border-top: var(--border);
+    padding: 12px 14px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+}
+
+.user-pill {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #141823;
+    padding: 12px 12px;
+    border-radius: 14px;
+    box-sizing: border-box;
+}
+
+.avatar-mini {
+    font-size: 16px;
+}
+
+/* ===== Main ===== */
+.chatgpt-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ✅ Right header height + border aligns with left header */
+.chatgpt-header {
+    height: var(--headerH);
+    padding: 12px 16px;
+    border-bottom: var(--border);
+    background: #0b0d10;
+    box-sizing: border-box;
+
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.header-title {
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.header-subtitle {
+    font-size: 12px;
+    color: #a7a7a7;
+    margin-top: 4px;
+}
+
+/* ===== Messages ===== */
+.chatgpt-messages {
+    flex: 1;
+    padding: 16px;
+    box-sizing: border-box;
+}
+
+.msg-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+    align-items: flex-start;
+}
+
+.msg-row.user {
+    flex-direction: row-reverse;
+}
+
+.msg-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: #141823;
+    border: 1px solid #232738;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    flex: 0 0 auto;
+}
+
+.msg-bubble {
+    max-width: 72%;
+    padding: 10px 12px;
+    border-radius: 18px;
+    border: 1px solid #232738;
+    white-space: pre-wrap;
+    line-height: 1.35;
+    overflow: hidden;
+}
+
+.msg-bubble.bot {
+    background: #141823;
+}
+
+.msg-bubble.user {
+    background: #2563eb;
+    border-color: #1d4ed8;
+}
+
+.msg-text {
+    font-size: 14px;
+}
+
+/* ===== Info / Code / Options ===== */
+.info-box,
+.option-box {
+    margin-top: 6px;
+    background: rgba(11, 13, 16, 0.35);
+    border: 1px solid #232738;
+    border-radius: 14px;
+    padding: 10px;
+}
+
+.info-title,
+.option-title {
+    font-weight: 700;
+    font-size: 13px;
+    color: #cfcfcf;
+    margin-bottom: 8px;
+}
+
+.info-content {
+  background: #0b0d10;
+  border: 1px solid #232738;
+  border-radius: 12px;
+  padding: 10px;
+
+  /* ✅ Make content always left aligned */
+  text-align: left;
+
+  /* ✅ Better readability for Jira descriptions */
+  white-space: pre-wrap;      /* wraps long lines */
+  word-break: break-word;     /* avoids overflow */
+  overflow-x: auto;
+  overflow-y: auto;
+
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+
+  max-height: 32vh;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.code-title {
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.code-box {
+    background: #0b0d10;
+    border: 1px solid #232738;
+    border-radius: 12px;
+    padding: 10px;
+    font-family: monospace;
+    font-size: 13px;
+    white-space: pre;
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 42vh;
+    max-width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.option-box.disabled {
+    opacity: 0.65;
+}
+
+.option-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.option-btn {
+    text-align: left;
+    padding: 12px 12px;
+    border-radius: 12px;
+    border: 1px solid #2a3142;
+    background: #0f1115;
+    color: #eaeaea;
+    cursor: pointer;
+    font-weight: 600;
+    line-height: 1.25;
+    white-space: normal;
+}
+
+.option-btn:hover {
+    border-color: rgba(37, 99, 235, 0.75);
+    background: rgba(37, 99, 235, 0.10);
+}
+
+.option-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.option-btn.more {
+    text-align: center;
+    font-weight: 700;
+    background: rgba(37, 99, 235, 0.10);
+    border-color: rgba(37, 99, 235, 0.40);
+}
+
+/* ===== Composer ===== */
+/* ✅ Composer height aligns with sidebar footer */
+.chatgpt-composer {
+    height: var(--footerH);
+    border-top: var(--border);
+    background: #0b0d10;
+    padding: 12px 14px;
+    box-sizing: border-box;
+
+    display: flex;
+    align-items: center;
+}
+
+.input-row {
+    width: 100%;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.chat-input {
+    flex: 1;
+    height: 44px;
+    padding: 0 12px;
+    border-radius: 12px;
+    border: 1px solid #232738;
+    background: #0f1115;
+    color: #eaeaea;
+}
+
+.chat-input:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
+}
+
+.chat-input:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.send-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    border: none;
+    background: #2563eb;
+    color: #fff;
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.send-btn-enabled {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    border: none;
+    background: #2563eb;
+    color: #fff;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.send-btn-enabled:hover {
+    background: #1d4ed8;
+}
+
+/* Sidebar bot brand row */
+.sidebar-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+}
+
+.sidebar-img {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    object-fit: cover;
+    background: #0b0d10;
+    border: 1px solid #232738;
+    flex: 0 0 auto;
+}
+
+.sidebar-title-text {
+    font-weight: 700;
+    font-size: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
