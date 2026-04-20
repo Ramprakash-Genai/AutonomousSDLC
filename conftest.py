@@ -11,6 +11,7 @@ from agents.execution_agent import ExecutionAgent
 from agents.script_recorder import ScriptRecorder
 from agents.feature_refiner_agent import FeatureRefinerAgent, RefinerConfig
 
+import json
 
 # -----------------------------------------------------------------------------
 # ✅ Permanent .env loading (project-root based for pytest)
@@ -121,6 +122,7 @@ def sdlc_context(request, planner, executor):
         ctx.step_deadline = start_ts + STEP_TIMEOUT_SECONDS
 
         planned_json = planner.plan_step(raw_step)
+        print("PLANNED JSON:\n", json.dumps(planned_json, indent=2, ensure_ascii=False))
         executor.execute(ctx, planned_json)
         return planned_json
 

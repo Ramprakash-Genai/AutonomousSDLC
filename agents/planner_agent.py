@@ -19,7 +19,9 @@ class PlannerAgent:
 
         # Cache controls
         self.cache_enabled = os.getenv("SDLC_PLANNER_CACHE", "1").strip() == "1"
-        self.cache_path = Path(os.getenv("SDLC_PLANNER_CACHE_FILE", "memory/planner_cache.json"))
+        self.cache_path = Path(
+            os.getenv("SDLC_PLANNER_CACHE_FILE", "memory/planner_cache.json")
+        )
 
         # Ensure directory exists
         if self.cache_enabled:
@@ -49,15 +51,23 @@ class PlannerAgent:
         if not self.cache_enabled:
             return
         try:
-            self.cache_path.write_text(json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8")
+            self.cache_path.write_text(
+                json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
         except Exception:
             # Cache write failure must not break execution
             pass
 
     # -------------------------
-    # Main planner entry
+    # Main planner entry (LEGACY)
     # -------------------------
     def plan_step(self, step: str, table=None, docstring=None) -> str:
+        """
+        LEGACY API (kept unchanged):
+        Returns a JSON STRING (same behavior as your existing implementation).
+
+        This is used by existing execution flows that expect a JSON string.
+        """
         table_rows = None
         if table:
             table_rows = [dict(r.items()) for r in table]
@@ -94,3 +104,45 @@ class PlannerAgent:
             self._save_cache(cache)
 
         return json.dumps(normalized, ensure_ascii=False)
+
+    # -------------------------
+    # New backend-friendly API
+    # -------------------------
+    def plan(self, raw_input: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        NEW API (used by backend/api/main.py and discovery mode):
+        Accepts RAW_INPUT_JSON dict with keys: step, table, docstring
+        Returns STRICT dict:
+          { "plan": { ...normalized keys... } }
+        """
+        step = (raw_input.get("step") or "").strip()
+        table = raw_input.get("table")
+        docstring = raw_input.get("docstring")
+
+        # Use existing legacy method to preserve behavior and caching
+        plan_json_str = self.plan_step(step=step, table=table, docstring=docstring)
+
+        # Convert JSON string -> dict
+        try:
+            plan_dict = json.loads(plan_json_str)
+        except Exception:
+            plan_dict = {}
+
+        return {"plan": plan_dict}
+
+
+# ----------------------------
+# Module-level helper (REQUIRED by backend/api/main.py)
+# ----------------------------
+def plan_step(raw_input: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Backward-compatible wrapper expected by backend/api/main.py.
+
+    Input:
+      {"step": "<bdd step>", "table": null|list, "docstring": null|str}
+
+    Output:
+      {"plan": {...}}
+    """
+    agent = PlannerAgent()
+    return agent.plan(raw_input)

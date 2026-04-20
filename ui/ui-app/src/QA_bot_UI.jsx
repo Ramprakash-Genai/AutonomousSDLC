@@ -1,27 +1,18 @@
+// ui/ui-app/src/QA_bot_UI.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./QA_bot_UI.css";
 
-// ✅ No hardcoded base URL (Vite env)
-const API = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:5000";
+// ✅ normalize backend URL (no trailing slash)
+const RAW_API = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:5000";
+const API = String(RAW_API).replace(/\/+$/, "");
 
 const STEPS = {
     PROJECT: "PROJECT",
     SPRINT: "SPRINT",
     STORY: "STORY",
     CONFIRM_GEN: "CONFIRM_GEN",
-    CONFIRM_APPROVE: "CONFIRM_APPROVE",
-
-    AFTER_SAVE_OK: "AFTER_SAVE_OK",
-    ASK_AUTOMATION: "ASK_AUTOMATION",
-
-    ASK_CODEGEN_YN: "ASK_CODEGEN_YN",
-    SELECT_BROWSER: "SELECT_BROWSER",
-    ENTER_APP_URL: "ENTER_APP_URL",
-    CONFIRM_APP_URL: "CONFIRM_APP_URL",
-    CODEGEN_RUNNING: "CODEGEN_RUNNING",
-
-    WAIT_LOCATOR_PASTE: "WAIT_LOCATOR_PASTE",
-    LOCATOR_REVIEW: "LOCATOR_REVIEW",
+    REVIEW_BDD: "REVIEW_BDD",
+    REVIEW_LOCATORS: "REVIEW_LOCATORS",
 };
 
 function QABotUI() {
@@ -32,6 +23,7 @@ function QABotUI() {
     const [messages, setMessages] = useState([]);
     const [loading, setLoading] = useState(false);
     const [typedText, setTypedText] = useState("");
+
     const [step, setStep] = useState(STEPS.PROJECT);
 
     const [selectedProject, setSelectedProject] = useState(null);
@@ -39,13 +31,15 @@ function QABotUI() {
     const [selectedStory, setSelectedStory] = useState(null);
 
     const [storyDetails, setStoryDetails] = useState(null);
-    const [generatedFeature, setGeneratedFeature] = useState("");
+    const [refinedFeature, setRefinedFeature] = useState("");
 
-    const [approvedFileName, setApprovedFileName] = useState("");
-    const [locatorMapping, setLocatorMapping] = useState("");
+    // ✅ Option-B governance state (MUST be inside component — fixes blank UI issue)
+    const [bddDuplicateInfo, setBddDuplicateInfo] = useState(null);
+    const [locatorPreview, setLocatorPreview] = useState(null);
+    const [locatorDuplicateInfo, setLocatorDuplicateInfo] = useState(null);
 
-    const [codegenBrowser, setCodegenBrowser] = useState("");
-    const [codegenUrl, setCodegenUrl] = useState("");
+    const [testScriptPreview, setTestScriptPreview] = useState(null);      // { scenario_name, sprint_name, story_key, test_script }
+    const [testScriptDuplicateInfo, setTestScriptDuplicateInfo] = useState(null); // { path, existing_test_script }
 
     const newId = () =>
         (typeof crypto !== "undefined" && crypto.randomUUID)
@@ -58,11 +52,11 @@ function QABotUI() {
     const pushUser = (text) =>
         setMessages((m) => [...m, { id: newId(), role: "user", type: "text", text }]);
 
-    const pushBotCode = (title, code) =>
-        setMessages((m) => [...m, { id: newId(), role: "bot", type: "code", title, code }]);
-
     const pushBotInfo = (title, content) =>
         setMessages((m) => [...m, { id: newId(), role: "bot", type: "info", title, content }]);
+
+    const pushBotCode = (title, code) =>
+        setMessages((m) => [...m, { id: newId(), role: "bot", type: "code", title, code }]);
 
     const pushBotOptions = (title, options, kind) =>
         setMessages((m) => [
@@ -74,14 +68,12 @@ function QABotUI() {
         setMessages((m) => m.map((x) => (x.id === msgId ? { ...x, disabled: true } : x)));
     };
 
-    // ✅ Standard user reply for option selections
     const pushUserSelection = (kind, option) => {
         const chosen = option?.label || option?.value || "";
         let msg = `You have selected: ${chosen}`;
-        if (kind === "project") msg = `You have selected Space: ${chosen}`;
-        if (kind === "sprint") msg = `You have selected Iteration: ${chosen}`;
-        if (kind === "story") msg = `You have selected Story: ${chosen}`;
-        if (kind === "select_browser") msg = `You have selected Browser: ${chosen}`;
+        if (kind === "project") msg = `You have selected the space ${chosen}`;
+        if (kind === "sprint") msg = `You have selected the sprint ${chosen}`;
+        if (kind === "story") msg = `You have selected the Story ${chosen}`;
         pushUser(msg);
     };
 
@@ -90,15 +82,49 @@ function QABotUI() {
     }, [messages, loading]);
 
     const showDefaultWelcome = () => {
-        pushBot("Welcome to the Autonomous SDLC Assistance!");
+        pushBot("Welcome to QA Copilot!");
+        // pushBot(`ℹ️ UI connected backend URL: ${API}`);
     };
 
-    // ✅ Optional: health check (helps show true backend connectivity)
+    // ✅ unified fetch helper (no-cache + safer error parsing)
+    const apiFetch = async (path, options = {}) => {
+        const url = `${API}${path}`;
+        const merged = {
+            ...options,
+            cache: "no-store",
+            mode: "cors",
+            headers: {
+                "Content-Type": "application/json",
+                ...(options.headers || {}),
+            },
+        };
+
+        const res = await fetch(url, merged);
+
+        let data = null;
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+            try {
+                data = await res.json();
+            } catch {
+                data = null;
+            }
+        } else {
+            try {
+                const txt = await res.text();
+                data = txt ? { detail: txt } : null;
+            } catch {
+                data = null;
+            }
+        }
+
+        return { res, data };
+    };
+
     const checkBackend = async () => {
         try {
-            const res = await fetch(`${API}/health`);
-            if (!res.ok) throw new Error("health failed");
-            return true;
+            const { res } = await apiFetch("/health", { method: "GET", headers: {} });
+            return res.ok;
         } catch {
             return false;
         }
@@ -113,37 +139,39 @@ function QABotUI() {
         setSelectedProject(null);
         setSelectedSprint(null);
         setSelectedStory(null);
-
         setStoryDetails(null);
-        setGeneratedFeature("");
+        setRefinedFeature("");
 
-        setApprovedFileName("");
-        setLocatorMapping("");
-        setCodegenBrowser("");
-        setCodegenUrl("");
+        setBddDuplicateInfo(null);
+        setLocatorPreview(null);
+        setLocatorDuplicateInfo(null);
+
+        setTestScriptPreview(null);
+        setTestScriptDuplicateInfo(null);
 
         showDefaultWelcome();
         await loadProjects(true);
     };
 
-    // ✅ Spaces from Jira via backend (/projects)
     const loadProjects = async (silent = false) => {
         setLoading(true);
         try {
             const ok = await checkBackend();
             if (!ok) {
-                pushBot("❌ Backend not reachable. Please start FastAPI server and verify /health.");
+                pushBot(`❌ Backend not reachable at ${API}. Please start FastAPI server and verify /health.`);
                 return;
             }
 
-            const res = await fetch(`${API}/projects`);
-            const data = await res.json();
-            const list = data.projects || [];
+            const { res, data } = await apiFetch("/projects", { method: "GET", headers: {} });
+            if (!res.ok) {
+                pushBot(`❌ Unable to fetch Spaces (projects). ${data?.detail || "Check /projects endpoint."}`);
+                return;
+            }
 
-            if (!silent) pushBot("Select any one Space from below:");
-
+            const list = data?.projects || [];
+            if (!silent) pushBot("Please select anyone spaces from below:");
             pushBotOptions(
-                "Select any one Space from below:",
+                "Please select anyone spaces from below:",
                 list.map((p) => ({ value: p.key, label: `${p.name} (${p.key})` })),
                 "project"
             );
@@ -154,17 +182,19 @@ function QABotUI() {
         }
     };
 
-    // ✅ Iterations from Jira via backend (/sprints/{projectKey})
     const loadSprints = async (projectKey) => {
         setLoading(true);
         try {
-            const res = await fetch(`${API}/sprints/${projectKey}`);
-            const data = await res.json();
-            const list = data.sprints || [];
+            const { res, data } = await apiFetch(`/sprints/${projectKey}`, { method: "GET", headers: {} });
+            if (!res.ok) {
+                pushBot(`❌ Unable to fetch iterations. ${data?.detail || "Check /sprints/{projectKey} endpoint."}`);
+                return;
+            }
 
-            pushBot("Select any one Iteration from below:");
+            const list = data?.sprints || [];
+            pushBot("Please select available any one sprint from below:");
             pushBotOptions(
-                "Available Iterations:",
+                "Please select available any one sprint from below:",
                 list.map((s) => ({ value: String(s.id), label: s.name })),
                 "sprint"
             );
@@ -175,24 +205,19 @@ function QABotUI() {
         }
     };
 
-    // ✅ Stories from Jira via backend (/stories/{sprintId})
-    const loadStories = async (sprintId, sprintNameFromClick = "") => {
+    const loadStories = async (sprintId) => {
         setLoading(true);
         try {
-            const res = await fetch(`${API}/stories/${sprintId}`);
-            const data = await res.json();
-            const list = data.stories || [];
+            const { res, data } = await apiFetch(`/stories/${sprintId}`, { method: "GET", headers: {} });
+            if (!res.ok) {
+                pushBot(`❌ Unable to fetch stories. ${data?.detail || "Check /stories/{sprintId} endpoint."}`);
+                return;
+            }
 
-            const sprintName =
-                (sprintNameFromClick && sprintNameFromClick.trim()) ||
-                (selectedSprint?.label && selectedSprint.label.trim()) ||
-                (selectedSprint?.value && String(selectedSprint.value).trim()) ||
-                "Selected Iteration";
-
-            pushBot(`Select any one story from the selected iteration: "${sprintName}".`);
-
+            const list = data?.stories || [];
+            pushBot("Please select available any one story from below:");
             pushBotOptions(
-                "Available Stories:",
+                "Please select available any one story from below:",
                 list.map((st) => ({ value: st.key, label: `${st.key} - ${st.summary}` })),
                 "story"
             );
@@ -205,43 +230,40 @@ function QABotUI() {
 
     const showStoryInfoCard = (data) => {
         const info =
-            `Summary:\n${data.summary}\n\n` +
-            `Description:\n${data.description || "(no description)"}\n\n` +
-            `Story Details:\n` +
-            `Space name: ${selectedProject?.label || selectedProject?.value || "-"}\n` +
-            `Iteration name: ${selectedSprint?.label || selectedSprint?.value || "-"}\n` +
-            `Story key: ${data.key}\n` +
-            `Assigned to: ${data.assignee || "-"}`;
-
+            `Story Title: ${data.summary}\n` +
+            `Story description: ${data.description || "(no description)"}\n\n` +
+            `Story details:\n` +
+            `  story number: ${data.key}\n` +
+            `  Assigned to : ${data.assignee || "-"}`;
         pushBotInfo("User Story Details:", info);
     };
 
-    // ✅ Story details from backend (/search)
     const loadStoryDetails = async (projectKey, sprintId, storyKey) => {
         setLoading(true);
         try {
-            const res = await fetch(`${API}/search`, {
+            const { res, data } = await apiFetch("/search", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ project: projectKey, sprint: sprintId, key: storyKey }),
             });
 
-            const data = await res.json();
             if (!res.ok) {
-                pushBot(`❌ ${data.detail || "Failed to fetch story details."}`);
+                pushBot(`❌ ${data?.detail || "Failed to fetch story details."}`);
                 return;
             }
 
             setStoryDetails(data);
-            pushBot(`✅ Selected story: "${data.key}"`);
             showStoryInfoCard(data);
 
             setStep(STEPS.CONFIRM_GEN);
-            pushBot(`Do you want me to generate a Feature file in BDD format for the selected user story: "${data.key}"?`);
-            pushBotOptions("Choose an option", [
-                { value: "YES", label: "Yes" },
-                { value: "NO", label: "No" },
-            ], "yesno_generate");
+            pushBot("Do you want to convert the story description into bdd feature format?");
+            pushBotOptions(
+                "Choose an option",
+                [
+                    { value: "YES", label: "Yes" },
+                    { value: "NO", label: "No" },
+                ],
+                "yesno_generate"
+            );
         } catch {
             pushBot("❌ Error fetching story details.");
         } finally {
@@ -249,16 +271,392 @@ function QABotUI() {
         }
     };
 
-    // NOTE: Feature generation & automation flow stays as-is (requires backend endpoints you already had)
-    const generateFeature = async () => {
-        pushBot("Next steps (Feature generation) will be wired after Jira selection is stable.");
+    const setAutoRefine = async (enabled) => {
+        try {
+            await apiFetch("/config/auto_refine", {
+                method: "POST",
+                body: JSON.stringify({ enabled }),
+            });
+        } catch {
+            // ignore
+        }
+    };
+
+    const callBlueVerseRefiner = async ({ existingFeature = "" } = {}) => {
+        if (!storyDetails) return null;
+        setLoading(true);
+        try {
+            pushBot("Refiner Agent is generating / refining the BDD feature file...");
+
+            const payload = {
+                story_key: storyDetails.key,
+                summary: storyDetails.summary,
+                description: storyDetails.description,
+                project: selectedProject?.value || "",
+                sprint: selectedSprint?.value || "",
+                existing_feature: existingFeature || "",
+            };
+
+            const { res, data } = await apiFetch("/blueverse/refine_feature", {
+                method: "POST",
+                body: JSON.stringify(payload),
+            });
+
+            if (!res.ok) {
+                pushBot(`❌ Refiner Agent failed: ${data?.detail || "Unknown error"}`);
+                return null;
+            }
+
+            const featureText =
+                typeof data.feature === "string"
+                    ? data.feature
+                    : data.feature?.refined_feature || "";
+
+            setRefinedFeature(featureText);
+
+            pushBot("Please review and approve the converted BDD test case below:");
+            pushBotCode("Converted Test case:", featureText);
+
+            setStep(STEPS.REVIEW_BDD);
+            pushBotOptions(
+                "Please choose one option:",
+                [
+                    { value: "APPROVE", label: "Yes I approve" },
+                    { value: "REGENERATE", label: "Regenerate the Test case" },
+                    { value: "CANCEL", label: "Cancel" },
+                ],
+                "review_bdd"
+            );
+
+            return featureText;
+        } catch {
+            pushBot("❌ Refiner Agent error. Please try again.");
+            return null;
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // ----------------------------
+    // Option-B Governance: Save Feature with duplicate scenario handling
+    // ----------------------------
+    const saveFeatureGoverned = async (decision = "save") => {
+        if (!storyDetails || !refinedFeature) return;
+        setLoading(true);
+        try {
+            const { res, data } = await apiFetch("/feature/save", {
+                method: "POST",
+                body: JSON.stringify({
+                    story_key: storyDetails.key,
+                    feature_text: refinedFeature,
+                    decision,
+                }),
+            });
+
+            if (!res.ok) {
+                pushBot(`❌ Save failed: ${data?.detail || "Unknown error"}`);
+                return;
+            }
+
+            if (data.status === "DUPLICATE_SCENARIO") {
+                setBddDuplicateInfo(data);
+                pushBot(`The approved scenario "${data.scenario}" already exists.`);
+                pushBotOptions(
+                    "Please choose one option:",
+                    [
+                        { value: "USE_EXISTING", label: "Use exsist scenario" },
+                        { value: "OVERWRITE", label: "Yes do overwrite" },
+                        { value: "CANCEL", label: "Cancel" },
+                    ],
+                    "dup_bdd"
+                );
+                return;
+            }
+
+            if (data.status === "SAVED" || data.status === "OVERWRITTEN" || data.status === "USING_EXISTING") {
+                pushBot(`✅ Feature approved: ${data.path || ""}`.trim());
+                await askGenerateLocatorDetails();
+                return;
+            }
+
+            pushBot("✅ Feature processed.");
+            await askGenerateLocatorDetails();
+        } catch {
+            pushBot("❌ Save failed due to network/backend error.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const saveTestScriptGoverned = async (decision = "save") => {
+        if (!testScriptPreview?.test_script || !storyDetails) return;
+
+        setLoading(true);
+        try {
+            const payload = {
+                story_key: testScriptPreview.story_key,
+                sprint_name: testScriptPreview.sprint_name,
+                scenario_name: testScriptPreview.scenario_name,
+                test_script: testScriptPreview.test_script,
+                decision, // save | overwrite | reuse_existing | cancel
+            };
+
+            const { res, data } = await apiFetch("/feature/testscript/save", {
+                method: "POST",
+                body: JSON.stringify(payload),
+            });
+
+            if (!res.ok) {
+                pushBot(`❌ Save test script failed: ${data?.detail || "Unknown error"}`);
+                return;
+            }
+
+            if (data.status === "DUPLICATE_TEST_SCRIPT") {
+                setTestScriptDuplicateInfo(data);
+
+                pushBot(`The approved Test Script already found at: ${data.path}`);
+                pushBotCode("Existing Test Script:", data.existing_test_script || "");
+
+                pushBotOptions(
+                    "Please choose anyone options from below to proceed it to further.",
+                    [
+                        { value: "REUSE", label: "Reuse exsist test script" },
+                        { value: "OVERWRITE", label: "Yes do overwrite" },
+                        { value: "CANCEL", label: "Cancel" },
+                    ],
+                    "dup_test_script"
+                );
+                return;
+            }
+
+            if (data.status === "TEST_SCRIPT_REUSED") {
+                pushBot(`✅ Reused existing test script: ${data.path}`);
+                pushBot('The test execution part will be comming soon! Thank you.');
+                pushBotOptions("Choose an option", [{ value: "OK", label: "Okay" }], "final_ok");
+                return;
+            }
+
+            if (data.status === "TEST_SCRIPT_SAVED") {
+                pushBot(`✅ Test script saved: ${data.path}`);
+                pushBot('The test execution part will be comming soon! Thank you.');
+                pushBotOptions("Choose an option", [{ value: "OK", label: "Okay" }], "final_ok");
+                return;
+            }
+
+            if (data.status === "CANCELLED") {
+                pushBot("Cancelled. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+
+            pushBot("✅ Test script decision applied.");
+        } catch {
+            pushBot("❌ Save test script failed due to network/backend error.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+
+    const askGenerateLocatorDetails = async () => {
+        setStep(STEPS.REVIEW_LOCATORS);
+        pushBot(`Do you want to generate a locator details for the approved bdd test case ${storyDetails?.key || ""}?`);
+        pushBotOptions(
+            "Choose an option",
+            [
+                { value: "YES", label: "Yes" },
+                { value: "NO", label: "No" },
+            ],
+            "yesno_locators"
+        );
+    };
+
+    const askGenerateTestScript = async () => {
+        pushBot(
+            `Do you want to generate test script for created locator details for the scenario ${storyDetails?.key || ""}?`
+        );
+        pushBotOptions(
+            "Choose an option",
+            [
+                { value: "YES", label: "Yes I want to generate a Test Script" },
+                { value: "NO", label: "No I want to generate a Test Script" },
+            ],
+            "yesno_test_script"
+        );
+    };
+
+    const generateTestScriptPreview = async () => {
+        if (!locatorPreview?.locator_details || !storyDetails) return;
+
+        setLoading(true);
+        try {
+            const scenarioName = getScenarioNameFromFeature();
+            const sprintName = selectedSprint?.label || selectedSprint?.value || "UNKNOWN_SPRINT";
+
+            pushBot(`Generating test script for scenario "${scenarioName}"...`);
+
+            const payload = {
+                story_key: storyDetails.key,
+                sprint_name: sprintName,
+                scenario_name: scenarioName,
+                locator_details: locatorPreview.locator_details,
+            };
+
+            const { res, data } = await apiFetch("/feature/testscript/generate", {
+                method: "POST",
+                body: JSON.stringify(payload),
+            });
+
+            if (!res.ok) {
+                pushBot(`❌ Test script generation failed: ${data?.detail || "Unknown error"}`);
+                return;
+            }
+
+            const script = (data?.test_script || "").trim();
+            if (!script) {
+                pushBot("❌ Test script generation returned empty script.");
+                return;
+            }
+
+            const previewObj = {
+                story_key: storyDetails.key,
+                sprint_name: sprintName,
+                scenario_name: scenarioName,
+                test_script: script,
+            };
+
+            setTestScriptPreview(previewObj);
+
+            pushBot(`Please review and approve the generated test script for the scenario "${scenarioName}"`);
+            pushBotCode("Generated Test Script:", script);
+
+            pushBotOptions(
+                "Please choose one option:",
+                [
+                    { value: "APPROVE", label: "Yes I Approve" },
+                    { value: "REGENERATE", label: "Regenerate the test script" },
+                    { value: "CANCEL", label: "Cancel" },
+                ],
+                "review_test_script"
+            );
+        } catch {
+            pushBot("❌ Test script generation failed due to network/backend error.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const getScenarioNameFromFeature = () => {
+        const text = refinedFeature || "";
+        const m = text.match(/^\s*Scenario:\s*(.+)\s*$/im);
+        return (m && m[1]) ? m[1].trim() : (storyDetails?.key || "UNKNOWN");
+    };
+
+    const generateLocatorPreview = async () => {
+        if (!refinedFeature) return;
+        setLoading(true);
+
+        try {
+            pushBot("Analyzing application UI to generate reusable locator details...");
+
+            const { res, data } = await apiFetch("/feature/locator/preview", {
+                method: "POST",
+                body: JSON.stringify({ feature_text: refinedFeature }),
+            });
+
+            if (!res.ok) {
+                pushBot(`❌ Locator preview failed: ${data?.detail || "Unknown error"}`);
+                return;
+            }
+
+            // ✅ UI SHOULD SHOW ONLY locator_details (hide plans + preview_navigation_ok)
+            const locatorDetails = Array.isArray(data?.locator_details) ? data.locator_details : [];
+
+            // Keep state shape stable for saveLocatorDetailsGoverned()
+            setLocatorPreview({ locator_details: locatorDetails });
+
+            // ✅ Display ONLY locator_details to user
+            pushBotCode("Locator Details (Preview):", JSON.stringify(locatorDetails, null, 2));
+
+            pushBotOptions(
+                "Please review and approve the created locator details for the each steps:",
+                [
+                    { value: "APPROVE", label: "Yes I Approve" },
+                    { value: "REGENERATE", label: "Regenerate the Locator details" },
+                    { value: "CANCEL", label: "Cancel" },
+                ],
+                "review_locators"
+            );
+        } catch {
+            pushBot("❌ Locator preview failed due to network/backend error.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const saveLocatorDetailsGoverned = async (decision = "save") => {
+        if (!locatorPreview?.locator_details) return;
+        setLoading(true);
+        try {
+            const { res, data } = await apiFetch("/feature/locator/save", {
+                method: "POST",
+                body: JSON.stringify({
+                    locator_details: locatorPreview.locator_details,
+                    decision,
+                }),
+            });
+
+            if (!res.ok) {
+                pushBot(`❌ Save locators failed: ${data?.detail || "Unknown error"}`);
+                return;
+            }
+
+            if (data.status === "DUPLICATE_LOCATORS") {
+                setLocatorDuplicateInfo(data);
+                pushBot("The approved locator details already exsist.");
+                pushBotOptions(
+                    "Please choose one option:",
+                    [
+                        { value: "USE_EXISTING", label: "Use exsist locator" },
+                        { value: "OVERWRITE", label: "Yes do overwrite" },
+                        { value: "CANCEL", label: "Cancel" },
+                    ],
+                    "dup_locators"
+                );
+                return;
+            }
+
+            if (data.status === "LOCATORS_SAVED") {
+                pushBot("✅ Locator details saved successfully.");
+                await askGenerateTestScript();
+                return;
+            }
+
+            if (data.status === "LOCATORS_REUSED") {
+                pushBot("✅ Using existing locator details (no overwrite applied).");
+                await askGenerateTestScript();
+                return;
+            }
+
+            if (data.status === "CANCELLED") {
+                pushBot("Cancelled. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+
+            pushBot("✅ Locator decision applied.");
+            pushBot("Phase complete. Restarting...");
+            await resetConversation();
+        } catch {
+            pushBot("❌ Save locators failed due to network/backend error.");
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleOptionClick = async (msgId, kind, option) => {
         if (loading) return;
         disableOptionsMessage(msgId);
-
-        // ✅ consistent user message
         pushUserSelection(kind, option);
 
         if (kind === "project") {
@@ -266,7 +664,7 @@ function QABotUI() {
             setSelectedSprint(null);
             setSelectedStory(null);
             setStoryDetails(null);
-            setGeneratedFeature("");
+            setRefinedFeature("");
             setStep(STEPS.SPRINT);
             await loadSprints(option.value);
             return;
@@ -276,9 +674,9 @@ function QABotUI() {
             setSelectedSprint(option);
             setSelectedStory(null);
             setStoryDetails(null);
-            setGeneratedFeature("");
+            setRefinedFeature("");
             setStep(STEPS.STORY);
-            await loadStories(option.value, option.label);
+            await loadStories(option.value);
             return;
         }
 
@@ -289,11 +687,144 @@ function QABotUI() {
         }
 
         if (kind === "yesno_generate") {
-            if (option.value === "YES") return generateFeature();
-            pushBot("Thanks. Restarting...");
-            await resetConversation();
-            return;
+            if (option.value === "YES") {
+                await setAutoRefine(true);
+                await callBlueVerseRefiner({ existingFeature: "" });
+                return;
+            }
+            if (option.value === "NO") {
+                await setAutoRefine(false);
+                pushBot("Okay. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
         }
+
+        if (kind === "review_bdd") {
+            if (option.value === "APPROVE") {
+                await saveFeatureGoverned("save");
+                return;
+            }
+            if (option.value === "REGENERATE") {
+                await callBlueVerseRefiner({ existingFeature: refinedFeature });
+                return;
+            }
+            if (option.value === "CANCEL") {
+                pushBot("Cancelled. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+        }
+
+        if (kind === "dup_bdd") {
+            if (option.value === "USE_EXISTING") {
+                await saveFeatureGoverned("use_existing");
+                return;
+            }
+            if (option.value === "OVERWRITE") {
+                await saveFeatureGoverned("overwrite");
+                return;
+            }
+            if (option.value === "CANCEL") {
+                pushBot("Cancelled. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+        }
+
+        if (kind === "yesno_locators") {
+            if (option.value === "YES") {
+                await generateLocatorPreview();
+                return;
+            }
+            if (option.value === "NO") {
+                pushBot("Okay. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+        }
+
+        if (kind === "review_locators") {
+            if (option.value === "APPROVE") {
+                await saveLocatorDetailsGoverned("save");
+                return;
+            }
+            if (option.value === "REGENERATE") {
+                await generateLocatorPreview();
+                return;
+            }
+            if (option.value === "CANCEL") {
+                pushBot("Cancelled. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+        }
+
+        if (kind === "dup_locators") {
+            if (option.value === "USE_EXISTING") {
+                await saveLocatorDetailsGoverned("use_existing");
+                return;
+            }
+            if (option.value === "OVERWRITE") {
+                await saveLocatorDetailsGoverned("overwrite");
+                return;
+            }
+            if (option.value === "CANCEL") {
+                pushBot("Cancelled. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+        }
+
+        if (kind === "yesno_test_script") {
+            if (option.value === "YES") {
+                await generateTestScriptPreview();
+                return;
+            }
+            if (option.value === "NO") {
+                pushBot("Cancelled. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+        }
+        if (kind === "review_test_script") {
+            if (option.value === "APPROVE") {
+                // ✅ duplicate check happens here via backend save endpoint
+                await saveTestScriptGoverned("save");
+                return;
+            }
+            if (option.value === "REGENERATE") {
+                await generateTestScriptPreview();
+                return;
+            }
+            if (option.value === "CANCEL") {
+                pushBot("Cancelled. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+        }
+        if (kind === "dup_test_script") {
+            if (option.value === "REUSE") {
+                await saveTestScriptGoverned("reuse_existing");
+                return;
+            }
+            if (option.value === "OVERWRITE") {
+                await saveTestScriptGoverned("overwrite");
+                return;
+            }
+            if (option.value === "CANCEL") {
+                pushBot("Cancelled. Restarting from Space selection...");
+                await resetConversation();
+                return;
+            }
+        }
+        if (kind === "final_ok") {
+            if (option.value === "OK") {
+                await resetConversation();
+                return;
+            }
+        }
+
     };
 
     const handleSend = async () => {
@@ -307,7 +838,6 @@ function QABotUI() {
     useEffect(() => {
         if (bootstrappedRef.current) return;
         bootstrappedRef.current = true;
-
         (async () => {
             showDefaultWelcome();
             await loadProjects(true);
@@ -315,24 +845,35 @@ function QABotUI() {
     }, []);
 
     const historyItems = useMemo(
-        () => [
-            { text: "Conversation History (Coming Soon)" },
-            { text: "New Chat (Current)" },
-        ],
+        () => [{ text: "Conversation History (Coming Soon)" }, { text: "New Chat (Current)" }],
         []
     );
 
     const isSendEnabled = !loading && typedText.trim().length > 0;
+
+    const BotAvatar = () => (
+        <img
+            className="sidebar-img"
+            src="/bot.png"
+            alt=""
+            onError={(e) => {
+                e.currentTarget.style.display = "none";
+                e.currentTarget.parentNode.insertAdjacentHTML(
+                    "afterbegin",
+                    '<span style="font-size:24px;vertical-align:middle;">🤖</span>'
+                );
+            }}
+        />
+    );
 
     return (
         <div className="chatgpt-layout">
             <aside className="chatgpt-sidebar">
                 <div className="sidebar-top">
                     <div className="sidebar-title-row">
-                        <img className="sidebar-img" src="/bot.png" alt="bot" />
-                        <div className="sidebar-title-text">Autonomous SDLC Assistance</div>
+                        <BotAvatar />
+                        <div className="sidebar-title-text">Oracle Pythia-26</div>
                     </div>
-
                     <button className="new-chat-btn" onClick={resetConversation} disabled={loading}>
                         ⟳ Refresh / New chat
                     </button>
@@ -356,15 +897,14 @@ function QABotUI() {
 
             <main className="chatgpt-main">
                 <header className="chatgpt-header">
-                    <div className="header-title">Autonomous SDLC Assistance</div>
-                    <div className="header-subtitle">Jira User Story → Gherkin Feature Generator</div>
+                    <div className="header-title">QA Copilot</div>
+                    <div className="header-subtitle">Jira → BDD → Locator Details → Approval → Save</div>
                 </header>
 
                 <section className="chatgpt-messages">
                     {messages.map((msg) => (
                         <div key={msg.id} className={`msg-row ${msg.role}`}>
                             <div className="msg-avatar">{msg.role === "bot" ? "🤖" : "👤"}</div>
-
                             <div className={`msg-bubble ${msg.role}`}>
                                 {msg.type === "text" && <div className="msg-text">{msg.text}</div>}
 

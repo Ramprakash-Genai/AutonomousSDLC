@@ -1,230 +1,348 @@
-import os
+# agents/config.py
+from __future__ import annotations
+
+import base64
 import json
-import requests
+import os
+import time
 from dataclasses import dataclass
-from typing import List
-import re
-import ast
 from pathlib import Path
+from typing import Any, Dict, Optional, List
+
+import requests
 from dotenv import load_dotenv
 
-
-# -----------------------------------------------------------------------------
-# ✅ Permanent .env loading (project-root based)
-# -----------------------------------------------------------------------------
-def _load_env_once() -> None:
-    """
-    Load .env from project root reliably (not dependent on current working directory).
-
-    PROJECT ROOT is assumed to be the folder that contains:
-      - conftest.py
-      - agents/ (this file is in agents/)
-      - .env
-
-    override behavior:
-      - SDLC_DOTENV_OVERRIDE=1 will force .env to override existing OS env values
-      - otherwise existing OS env values remain higher priority (recommended)
-    """
-    override = os.getenv("SDLC_DOTENV_OVERRIDE", "0").strip() == "1"
-
-    # agents/config.py -> parents[1] = project root
-    project_root = Path(__file__).resolve().parents[1]
-    env_path = project_root / ".env"
-
-    if env_path.exists():
-        load_dotenv(dotenv_path=env_path, override=override)
+_ENV_LOADED = False
 
 
-_load_env_once()
+def _find_env_file() -> Optional[Path]:
+    here = Path(__file__).resolve()
+    for parent in [
+        here.parent,
+        here.parent.parent,
+        here.parent.parent.parent,
+        Path.cwd(),
+    ]:
+        candidate = parent / ".env"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_env_once(force: bool = False) -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED and not force:
+        return
+
+    env_file = _find_env_file()
+    if env_file:
+        load_dotenv(dotenv_path=str(env_file), override=True)
+    else:
+        load_dotenv(override=True)
+
+    _ENV_LOADED = True
+
+
+class BlueVerseAuthError(Exception):
+    """Raised when BlueVerse authentication fails (401)."""
 
 
 @dataclass
 class BlueVerseConfig:
     url: str
     token: str
-    refiner_space: str
-    refiner_flow_id: str
-    planner_space: str
-    planner_flow_id: str
-    locator_space: str
-    locator_flow_id: str
-    healing_space: str
-    healing_flow_id: str
 
-    @staticmethod
-    def from_env() -> "BlueVerseConfig":
-        url = (
-            os.getenv("BLUEVERSE_URL")
-            or "https://blueverse-foundry.ltimindtree.com/chatservice/chat"
+    # IMPORTANT: BlueVerse expects these names in payload
+    space_name: str = ""
+    flow_id: str = ""
+
+    @classmethod
+    def from_env(cls) -> "BlueVerseConfig":
+        # Always reload for long-running FastAPI
+        _load_env_once(force=True)
+
+        url = os.getenv("BLUEVERSE_URL", "").strip()
+        token = os.getenv("BLUEVERSE_TOKEN", "").strip()
+
+        token_file = os.getenv("BLUEVERSE_TOKEN_FILE", "").strip()
+        if token_file:
+            p = Path(token_file).expanduser()
+            if p.exists():
+                file_token = p.read_text(encoding="utf-8").strip()
+                if file_token:
+                    token = file_token
+
+        # ---- Routing resolution (most important fix) ----
+        # Prefer Refiner-specific vars if present (your .env uses these)
+        ref_space = os.getenv("BLUEVERSE_REFINER_SPACE", "").strip()
+        ref_flow = os.getenv("BLUEVERSE_REFINER_FLOWID", "").strip()
+
+        # Fallback: generic names some code uses
+        generic_space = os.getenv(
+            "BLUEVERSE_SPACE_NAME",
+            os.getenv("BLUEVERSE_SPACE_ID", os.getenv("SPACE_ID", "")),
+        ).strip()
+        generic_flow = os.getenv(
+            "BLUEVERSE_FLOW_ID", os.getenv("FLOW_ID", os.getenv("FLOWID", ""))
         ).strip()
 
-        token = (os.getenv("BLUEVERSE_TOKEN") or "").strip()
+        space_name = ref_space or generic_space
+        flow_id = ref_flow or generic_flow
+
+        if not url:
+            raise RuntimeError("Missing BLUEVERSE_URL in .env")
         if not token:
             raise RuntimeError(
-                "BLUEVERSE_TOKEN is missing. Please set it in .env or environment variables."
+                "Missing BLUEVERSE_TOKEN (or BLUEVERSE_TOKEN_FILE) in .env"
             )
 
-        refiner_space = (os.getenv("BLUEVERSE_REFINER_SPACE") or "").strip()
-        refiner_flow_id = (os.getenv("BLUEVERSE_REFINER_FLOWID") or "").strip()
+        return cls(url=url, token=token, space_name=space_name, flow_id=flow_id)
 
-        planner_space = (os.getenv("BLUEVERSE_PLANNER_SPACE") or "").strip()
-        planner_flow_id = (os.getenv("BLUEVERSE_PLANNER_FLOWID") or "").strip()
 
-        locator_space = (os.getenv("BLUEVERSE_LOCATOR_SPACE") or "").strip()
-        locator_flow_id = (os.getenv("BLUEVERSE_LOCATOR_FLOWID") or "").strip()
-
-        healing_space = (os.getenv("BLUEVERSE_HEALING_SPACE") or "").strip()
-        healing_flow_id = (os.getenv("BLUEVERSE_HEALING_FLOWID") or "").strip()
-
-        # All 4 agents are mandatory for "Groq removed permanently"
-        if not refiner_space or not refiner_flow_id:
-            raise RuntimeError(
-                "BLUEVERSE_REFINER_SPACE or BLUEVERSE_REFINER_FLOWID is missing."
-            )
-        if not planner_space or not planner_flow_id:
-            raise RuntimeError(
-                "BLUEVERSE_PLANNER_SPACE or BLUEVERSE_PLANNER_FLOWID is missing."
-            )
-        if not locator_space or not locator_flow_id:
-            raise RuntimeError(
-                "BLUEVERSE_LOCATOR_SPACE or BLUEVERSE_LOCATOR_FLOWID is missing."
-            )
-        if not healing_space or not healing_flow_id:
-            raise RuntimeError(
-                "BLUEVERSE_HEALING_SPACE or BLUEVERSE_HEALING_FLOWID is missing."
-            )
-
-        return BlueVerseConfig(
-            url=url,
-            token=token,
-            refiner_space=refiner_space,
-            refiner_flow_id=refiner_flow_id,
-            planner_space=planner_space,
-            planner_flow_id=planner_flow_id,
-            locator_space=locator_space,
-            locator_flow_id=locator_flow_id,
-            healing_space=healing_space,
-            healing_flow_id=healing_flow_id,
+def _jwt_expired(token: str, skew_seconds: int = 30) -> bool:
+    """Best-effort JWT exp check (no signature verification)."""
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return False
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(
+            base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8")
         )
+        exp = payload.get("exp")
+        if not isinstance(exp, (int, float)):
+            return False
+        return time.time() > (float(exp) - skew_seconds)
+    except Exception:
+        return False
 
 
 class BlueVerseClient:
     """
-    Minimal BlueVerse client for calling AI Agents via /chatservice/chat.
+    BlueVerse chat client.
+
+    Your BLUEVERSE_URL already includes the endpoint:
+        https://.../chatservice/chat
+
+    BlueVerse requires payload fields:
+        query, space_name, flow_id
     """
 
-    def __init__(self, cfg: BlueVerseConfig):
-        self.cfg = cfg
+    def __init__(self, cfg: Optional[BlueVerseConfig] = None, timeout: int = 300):
+        self.timeout = timeout
+        self.session = requests.Session()
+        self._cfg = cfg
 
-    def _headers(self) -> dict:
+    def _cfg_now(self) -> BlueVerseConfig:
+        # Always read fresh routing + token for FastAPI calls
+        return BlueVerseConfig.from_env()
+
+    def _headers(self) -> Dict[str, str]:
+        cfg = self._cfg_now()
+        if _jwt_expired(cfg.token):
+            raise BlueVerseAuthError('{"exp":"token expired"}')
         return {
+            "Authorization": f"Bearer {cfg.token}",
+            "Accept": "application/json",
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.cfg.token}",
         }
 
     def chat(
-        self, space_name: str, flow_id: str, query: str, timeout_seconds: int = 60
-    ) -> dict:
-        body = {"query": query, "space_name": space_name, "flowId": flow_id}
-        resp = requests.post(
-            self.cfg.url, headers=self._headers(), json=body, timeout=timeout_seconds
+        self, query: str, extra: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        cfg = self._cfg_now()
+        url = cfg.url.rstrip("/")
+
+        # ✅ REQUIRED payload keys for your BlueVerse endpoint
+        payload: Dict[str, Any] = {
+            "query": query,
+            "space_name": cfg.space_name,
+            "flow_id": cfg.flow_id,
+        }
+
+        # Some deployments accept alternate keys too; harmless to include as compatibility
+        payload["space_id"] = cfg.space_name  # fallback mapping
+        payload["flowId"] = cfg.flow_id  # camelCase fallback
+
+        if extra:
+            payload.update(extra)
+
+        resp = self.session.post(
+            url, headers=self._headers(), json=payload, timeout=self.timeout
         )
-        resp.raise_for_status()
-        data = resp.json()
 
-        # Case 1: structured output nested under response dict
-        if isinstance(data, dict) and isinstance(data.get("response"), dict):
-            return data["response"]
+        if resp.status_code == 401:
+            raise BlueVerseAuthError(resp.text)
 
-        # Case 2: output inside "response" as STRING
-        if isinstance(data, dict) and isinstance(data.get("response"), str):
-            txt = data["response"].strip()
+        if resp.status_code == 400:
+            raise RuntimeError(f"BlueVerse HTTP 400: {resp.text}")
 
-            try:
-                parsed = json.loads(txt)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                pass
+        if resp.status_code == 404:
+            raise RuntimeError(f"BlueVerse HTTP 404: {resp.text}")
 
-            try:
-                parsed = ast.literal_eval(txt)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                pass
+        if not resp.ok:
+            raise RuntimeError(f"BlueVerse HTTP {resp.status_code}: {resp.text}")
 
-            m = re.search(r"\{.*\}", txt, flags=re.S)
-            if m:
-                candidate = m.group(0)
+        return resp.json()
+
+    def chat_with_routing(
+        self,
+        query: str,
+        space_name: str,
+        flow_id: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Call BlueVerse chat endpoint but override routing (space_name + flowId).
+        This is needed when you have multiple agents (Refiner, TestScriptGenerator, etc.)
+        using the SAME BlueVerse base URL + token.
+        """
+        cfg = self._cfg_now()
+        url = cfg.url.rstrip("/")
+
+        # Required payload keys (include both snake_case + camelCase for compatibility)
+        payload: Dict[str, Any] = {
+            "query": query,
+            "space_name": (space_name or "").strip(),
+            "flow_id": (flow_id or "").strip(),
+            "flowId": (flow_id or "").strip(),
+            "space_id": (space_name or "").strip(),  # compatibility fallback
+        }
+
+        if extra:
+            payload.update(extra)
+
+        resp = self.session.post(
+            url, headers=self._headers(), json=payload, timeout=self.timeout
+        )
+
+        if resp.status_code == 401:
+            raise BlueVerseAuthError(resp.text)
+
+        if resp.status_code == 400:
+            raise RuntimeError(f"BlueVerse HTTP 400: {resp.text}")
+
+        if resp.status_code == 404:
+            raise RuntimeError(f"BlueVerse HTTP 404: {resp.text}")
+
+        if not resp.ok:
+            raise RuntimeError(f"BlueVerse HTTP {resp.status_code}: {resp.text}")
+
+        return resp.json()
+
+    def generate_test_script(
+        self,
+        story_key: str,
+        sprint_name: str,
+        scenario_name: str,
+        locator_details: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Generate pytest-playwright test script using BlueVerse TestScriptGeneratorAgent.
+
+        Uses env vars:
+          - BLUEVERSE_TEST_SCRIPT_GENERATOR_SPACE
+          - BLUEVERSE_TEST_SCRIPT_GENERATOR_FLOWID
+        """
+        _load_env_once(force=True)
+
+        space = os.getenv("BLUEVERSE_TEST_SCRIPT_GENERATOR_SPACE", "").strip()
+        flow = os.getenv("BLUEVERSE_TEST_SCRIPT_GENERATOR_FLOWID", "").strip()
+
+        if not space or not flow:
+            raise RuntimeError(
+                "Missing BLUEVERSE_TEST_SCRIPT_GENERATOR_SPACE or BLUEVERSE_TEST_SCRIPT_GENERATOR_FLOWID in .env"
+            )
+
+        # Build a strict query for the agent (agent already has system prompt, but we keep input structured)
+        query = (
+            "Generate a pytest-playwright test script for one scenario using ONLY the locator JSON.\n"
+            "Return output as JSON with key: test_script.\n\n"
+            f"Story key: {story_key}\n"
+            f"Sprint name: {sprint_name}\n"
+            f"Scenario name: {scenario_name}\n\n"
+            "Locator JSON:\n"
+            f"{json.dumps(locator_details or [], indent=2)}"
+        )
+
+        data = self.chat_with_routing(query=query, space_name=space, flow_id=flow)
+
+        # Normalize output shapes:
+        # Some agents return {"test_script": "..."} directly,
+        # some wrap under "response"/"text"/"data"
+        if isinstance(data, dict):
+            if isinstance(data.get("test_script"), str):
+                return {"test_script": data["test_script"]}
+
+            if isinstance(data.get("response"), str):
+                # sometimes response is JSON-like string; try to parse
                 try:
-                    parsed = ast.literal_eval(candidate)
-                    if isinstance(parsed, dict):
-                        return parsed
+                    parsed = json.loads(data["response"])
+                    if isinstance(parsed, dict) and isinstance(
+                        parsed.get("test_script"), str
+                    ):
+                        return {"test_script": parsed["test_script"]}
                 except Exception:
-                    pass
+                    # if it's raw python code, wrap it
+                    return {"test_script": data["response"]}
 
-            raise RuntimeError(
-                f"BlueVerse returned non-parseable response string: {txt[:300]}"
-            )
+            if isinstance(data.get("text"), str):
+                return {"test_script": data["text"]}
 
-        return data
+            inner = data.get("data")
+            if isinstance(inner, dict):
+                for k in ("test_script", "response", "text"):
+                    v = inner.get(k)
+                    if isinstance(v, str):
+                        # try JSON parse for response field
+                        if k == "response":
+                            try:
+                                parsed = json.loads(v)
+                                if isinstance(parsed, dict) and isinstance(
+                                    parsed.get("test_script"), str
+                                ):
+                                    return {"test_script": parsed["test_script"]}
+                            except Exception:
+                                return {"test_script": v}
+                        return {"test_script": v}
 
-    # Feature Refiner
-    def refine_feature(self, raw_feature_text: str) -> str:
-        data = self.chat(
-            self.cfg.refiner_space, self.cfg.refiner_flow_id, raw_feature_text
+        # Fallback: if BlueVerse returned a string directly
+        if isinstance(data, str) and data.strip():
+            return {"test_script": data.strip()}
+
+        raise RuntimeError("TestScriptGeneratorAgent returned no valid test_script")
+
+    def refine_feature(
+        self, raw_feature: str, constraints: Optional[Dict[str, Any]] = None
+    ) -> str:
+        prompt = (
+            f"Return ONLY valid Gherkin (.feature file) as plain text.\n\n{raw_feature}"
         )
-        refined = data.get("refined_feature")
-        if not isinstance(refined, str) or not refined.strip():
-            raise RuntimeError(
-                f"BlueVerse refiner returned unexpected response: {data}"
-            )
-        return refined.strip()
 
-    # Planner
-    def plan_step(self, raw_input_json: dict) -> dict:
-        query = json.dumps(raw_input_json, ensure_ascii=False)
-        data = self.chat(self.cfg.planner_space, self.cfg.planner_flow_id, query)
-        plan = data.get("plan")
-        if not isinstance(plan, dict):
-            raise RuntimeError(
-                f"BlueVerse planner returned unexpected response: {data}"
-            )
-        return plan
+        data = self.chat(prompt, extra=constraints or {})
 
-    # Locator (expects LocatorResponse)
-    def locator_candidates(self, payload: dict) -> List[str]:
-        query = json.dumps(payload, ensure_ascii=False)
-        data = self.chat(self.cfg.locator_space, self.cfg.locator_flow_id, query)
+        # ✅ HARD GUARANTEE: return ONLY the feature string
+        if isinstance(data, dict):
+            if isinstance(data.get("refined_feature"), str):
+                return data["refined_feature"]
 
-        if isinstance(data.get("LocatorResponse"), dict):
-            inner = data["LocatorResponse"]
-            cands = inner.get("candidates")
-        else:
-            cands = data.get("candidates")
+            if isinstance(data.get("response"), str):
+                return data["response"]
 
-        if not isinstance(cands, list):
-            raise RuntimeError(
-                f"BlueVerse locator returned unexpected response: {data}"
-            )
+            if isinstance(data.get("text"), str):
+                return data["text"]
 
-        return [str(c).strip() for c in cands if isinstance(c, str) and c.strip()]
+            inner = data.get("data")
+            if isinstance(inner, dict):
+                for k in ("refined_feature", "response", "text"):
+                    v = inner.get(k)
+                    if isinstance(v, str):
+                        return v
 
-    # Healing (expects HealingResponse)
-    def healing_candidates(self, payload: dict) -> List[str]:
-        query = json.dumps(payload, ensure_ascii=False)
-        data = self.chat(self.cfg.healing_space, self.cfg.healing_flow_id, query)
+            # ❌ NEVER stringify the dict for UI
+            raise RuntimeError("Refiner returned no valid Gherkin text")
 
-        if isinstance(data.get("HealingResponse"), dict):
-            inner = data["HealingResponse"]
-            cands = inner.get("candidates")
-        else:
-            cands = data.get("candidates")
+        if isinstance(data, str):
+            return data
 
-        if not isinstance(cands, list):
-            raise RuntimeError(
-                f"BlueVerse healing returned unexpected response: {data}"
-            )
-
-        return [str(c).strip() for c in cands if isinstance(c, str) and c.strip()]
+        raise RuntimeError("Invalid refiner response type")

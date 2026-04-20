@@ -1,41 +1,62 @@
 # tools/smart_locator.py
+# Universal deterministic locator resolver (non-hardcoded)
+# Generates ranked Playwright selector candidates for a given (action, locator_type, target, value)
+
 import re
-from typing import Optional, List
+from typing import List, Optional, Dict, Any
+
 
 # Anchor targets like:
 #   below text "Enter the bypass code."
-#   below text "Enter the bypass code"
-#   below text "Enter the bypass code".   (dot outside quotes)
-#   below text "Enter the bypass code."   (dot inside quotes)
+#   above text "Category"
+#   within text "Some label"
 _ANCHOR_RE = re.compile(
     r'^\s*(below|above|within|inside)\s+text\s+"([^"]+)"\s*\.?\s*$',
     re.IGNORECASE,
 )
 
 
-def _css_attr(attr: str, value: str) -> str:
-    """Safe CSS attribute selector."""
+def _esc_css_value(value: str) -> str:
+    """Escape CSS attribute value safely."""
     v = value or ""
     v = v.replace("\\", "\\\\")
     v = v.replace('"', '\\"')
     v = v.replace("\n", " ").replace("\r", " ").strip()
-    return f'[{attr}="{v}"]'
+    return v
+
+
+def _css_attr(attr: str, value: str) -> str:
+    """Safe CSS attribute selector."""
+    v = _esc_css_value(value)
+    if not v:
+        return ""
+    return f'css=[{attr}="{v}"]'
+
+
+def _esc_text_value(text: str) -> str:
+    """Escape text for Playwright text engines."""
+    t = text or ""
+    t = t.replace('"', '\\"')
+    t = t.replace("\n", " ").replace("\r", " ").strip()
+    return t
 
 
 def _pw_text_exact(text: str) -> str:
-    """Playwright text engine exact match."""
-    t = (text or "").replace('"', '\\"')
-    t = t.replace("\n", " ").replace("\r", " ").strip()
-    return f'text="{t}"' if t else 'text=""'
+    """Playwright text selector exact match."""
+    t = _esc_text_value(text)
+    return f'text="{t}"' if t else ""
 
 
-def _esc_q(s: str) -> str:
-    """Escape for Playwright selector engines."""
-    return (s or "").replace('"', '\\"').replace("\n", " ").replace("\r", " ").strip()
+def _pw_text_loose(text: str) -> str:
+    """Playwright text selector loose match."""
+    t = _esc_text_value(text)
+    return f"text={t}" if t else ""
 
 
 def _xpath_literal(text: str) -> str:
     """Safe XPath literal for arbitrary text (handles quotes)."""
+    if text is None:
+        text = ""
     if '"' not in text:
         return f'"{text}"'
     parts = text.split('"')
@@ -48,183 +69,179 @@ def _xpath_literal(text: str) -> str:
     return "concat(" + ", ".join(concat_parts) + ")"
 
 
+def _role_selector(role: str, name: str, exact: bool = False) -> str:
+    """
+    Playwright role selector engine format:
+      role=button[name="Save"]
+    exact match is handled by name matching strategy in executor; here we keep consistent.
+    """
+    n = _esc_text_value(name)
+    if not n:
+        return f"role={role}"
+    # Use quoted name; executor may try exact/loose variants elsewhere.
+    return f'role={role}[name="{n}"]'
+
+
+def _candidate_list(*items: str) -> List[str]:
+    return [x for x in items if x and isinstance(x, str) and x.strip()]
+
+
 class SmartLocatorResolver:
     """
     Universal deterministic locator resolver.
 
-    Policy (universal):
-      1) Accessibility-first: role+name, label, placeholder
-      2) DOM attributes: data-testid, aria-label, title, name, placeholder
-      3) Generic XPath: label->input, anchor below/above/within, clickable-ancestor for click
-      4) Text fallback
-
-    Returns multi-candidate selectors separated by "\\n\\n".
+    It returns a single string that may contain multiple candidate selectors separated by blank lines.
+    Your execution engine should try candidates in order.
     """
 
-    def _unique(self, items: List[str]) -> List[str]:
-        seen = set()
-        out = []
-        for x in items or []:
-            x = (x or "").strip()
-            if x and x not in seen:
-                out.append(x)
-                seen.add(x)
-        return out
-
-    def _role_for(self, locator_type: Optional[str], action: str) -> Optional[str]:
-        lt = (locator_type or "").strip().lower()
-        action = (action or "").strip().lower()
-
-        if lt in ("link", "button", "tab", "checkbox", "radio", "combobox"):
-            return lt
-        if lt == "dropdown":
-            return "button"
-        if lt == "header":
-            return "heading"
-
-        if action == "input":
-            return "textbox"
-        if action == "click":
-            return "button"
-        if action == "select":
-            return "combobox"
-        return None
-
-    def _anchor_candidates(
-        self, direction: str, anchor_text: str, action: str
-    ) -> List[str]:
-        """Universal anchor resolver (no hardcoding)."""
-        anchor = (anchor_text or "").strip()
-        if not anchor:
-            return []
-
-        lit = _xpath_literal(anchor)
-        anchor_exact = f"(//*[normalize-space(.)={lit}])[1]"
-        anchor_contains = f"(//*[contains(normalize-space(.), {lit})])[1]"
-
-        cands: List[str] = []
-
-        if action in ("input", "select"):
-            if direction == "below":
-                cands.extend(
-                    [
-                        f"xpath={anchor_exact}/following::input[not(@type='hidden')][1]",
-                        f"xpath={anchor_exact}/following::textarea[1]",
-                        f"xpath={anchor_contains}/following::input[not(@type='hidden')][1]",
-                        f"xpath={anchor_contains}/following::textarea[1]",
-                    ]
-                )
-            elif direction == "above":
-                cands.extend(
-                    [
-                        f"xpath={anchor_exact}/preceding::input[not(@type='hidden')][1]",
-                        f"xpath={anchor_exact}/preceding::textarea[1]",
-                        f"xpath={anchor_contains}/preceding::input[not(@type='hidden')][1]",
-                        f"xpath={anchor_contains}/preceding::textarea[1]",
-                    ]
-                )
-            else:
-                cands.extend(
-                    [
-                        f"xpath={anchor_exact}/ancestor-or-self::*[self::div or self::section or self::form][1]"
-                        "//input[not(@type='hidden')][1]",
-                        f"xpath={anchor_exact}/ancestor-or-self::*[self::div or self::section or self::form][1]"
-                        "//textarea[1]",
-                        f"xpath={anchor_contains}/ancestor-or-self::*[self::div or self::section or self::form][1]"
-                        "//input[not(@type='hidden')][1]",
-                    ]
-                )
-
-        if action == "click":
-            if direction == "below":
-                cands.append(
-                    f"xpath={anchor_contains}/following::*[self::a or self::button or @role='button' or @role='link' "
-                    "or @onclick or @tabindex='0'][1]"
-                )
-            elif direction == "above":
-                cands.append(
-                    f"xpath={anchor_contains}/preceding::*[self::a or self::button or @role='button' or @role='link' "
-                    "or @onclick or @tabindex='0'][1]"
-                )
-            else:
-                cands.append(
-                    f"xpath={anchor_contains}/ancestor-or-self::*[self::div or self::section or self::form][1]"
-                    "//*[self::a or self::button or @role='button' or @role='link' or @onclick or @tabindex='0'][1]"
-                )
-
-        return self._unique(cands)
-
     def resolve(
-        self, page, target: str, action: str, locator_type: Optional[str] = None
-    ) -> Optional[str]:
+        self,
+        page,  # kept for signature compatibility; we generate selectors from text only
+        target: str,
+        action: str,
+        locator_type: Optional[str] = None,
+        value: Optional[str] = None,
+    ) -> str:
+        action = (action or "").lower().strip()
+        locator_type = (locator_type or "").lower().strip() if locator_type else ""
         target = (target or "").strip()
-        action = (action or "").strip().lower()
-        locator_type = (locator_type or "").strip().lower() or None
+        value = (value or "").strip() if value is not None else ""
 
-        if not target:
-            return None
+        candidates: List[str] = []
 
-        tq = _esc_q(target)
-        cands: List[str] = []
-
-        # 0) Anchor parsing (universal)
+        # 0) Anchor expression support: target = below/above/within text "X"
+        # Use this when planner emits target like: below text "Enter the bypass code."
         m = _ANCHOR_RE.match(target)
         if m:
             direction = m.group(1).lower()
-            anchor_text = m.group(2)
-            cands.extend(self._anchor_candidates(direction, anchor_text, action))
+            anchor = m.group(2)
 
-        # 1) ASSERT: tolerant + exact fallback (universal)
-        if action == "assert":
-            cands.append(f"text={tq}")
-            key = target[:40].rstrip() if len(target) > 60 else target
-            cands.append(
-                f"xpath=//*[contains(normalize-space(.), {_xpath_literal(key)})]"
+            # Anchor → input/select/combobox near it
+            ax = _xpath_literal(anchor)
+
+            if action in ("input", "select"):
+                # Prefer the nearest input/textarea/select following anchor
+                if direction in ("below", "within", "inside"):
+                    candidates += _candidate_list(
+                        f"xpath=(//*[normalize-space()={ax}])[1]/following::input[1]",
+                        f"xpath=(//*[normalize-space()={ax}])[1]/following::textarea[1]",
+                        f'xpath=(//*[normalize-space()={ax}])[1]/following::*[@role="combobox"][1]',
+                        f"xpath=(//*[normalize-space()={ax}])[1]/following::select[1]",
+                    )
+                elif direction == "above":
+                    candidates += _candidate_list(
+                        f"xpath=(//*[normalize-space()={ax}])[1]/preceding::input[1]",
+                        f"xpath=(//*[normalize-space()={ax}])[1]/preceding::textarea[1]",
+                        f'xpath=(//*[normalize-space()={ax}])[1]/preceding::*[@role="combobox"][1]',
+                        f"xpath=(//*[normalize-space()={ax}])[1]/preceding::select[1]",
+                    )
+
+            if action in ("click",):
+                # Click nearest clickable following anchor
+                if direction in ("below", "within", "inside"):
+                    candidates += _candidate_list(
+                        f"xpath=(//*[normalize-space()={ax}])[1]/following::a[1]",
+                        f"xpath=(//*[normalize-space()={ax}])[1]/following::button[1]",
+                    )
+                elif direction == "above":
+                    candidates += _candidate_list(
+                        f"xpath=(//*[normalize-space()={ax}])[1]/preceding::a[1]",
+                        f"xpath=(//*[normalize-space()={ax}])[1]/preceding::button[1]",
+                    )
+
+        # 1) Accessibility-first candidates by locator_type where possible
+        # Map common locator_type to role
+        role_map: Dict[str, str] = {
+            "button": "button",
+            "link": "link",
+            "tab": "tab",
+            "textbox": "textbox",
+            "textarea": "textbox",  # Playwright uses textbox role for textarea too
+            "combobox": "combobox",
+            "dropdown": "combobox",  # many dropdowns are combobox/listbox
+            "checkbox": "checkbox",
+            "radiobutton": "radio",
+            "radio": "radio",
+            "menuitem": "menuitem",
+            "listitem": "listitem",
+            "row": "row",
+        }
+
+        if locator_type in role_map and target:
+            candidates += _candidate_list(
+                _role_selector(role_map[locator_type], target)
             )
-            cands.append(_pw_text_exact(target))
-            cands = self._unique(cands)
-            return "\n\n".join(cands) if len(cands) > 1 else cands[0]
 
-        # 2) Accessibility-first (role/name/label/placeholder)
-        role = self._role_for(locator_type, action)
-        if role:
-            cands.append(f'role={role}[name="{tq}"]')
+        # Generic clickable by role/name (if locator_type unknown but action suggests click)
+        if action == "click" and target:
+            candidates += _candidate_list(
+                _role_selector("button", target),
+                _role_selector("link", target),
+                _role_selector("tab", target),
+                _role_selector("menuitem", target),
+            )
 
-        if action in ("input", "select"):
-            cands.extend([f'label="{tq}"', f'placeholder="{tq}"'])
-
-        # 3) DOM attributes
-        cands.extend(
-            [
-                _css_attr("data-testid", target),
+        # 2) Label/placeholder candidates (inputs/combobox)
+        if locator_type in ("textbox", "textarea", "combobox", "dropdown") and target:
+            # Playwright selector engines: label=, placeholder=
+            candidates += _candidate_list(
+                f'label="{_esc_text_value(target)}"',
+                f'placeholder="{_esc_text_value(target)}"',
                 _css_attr("aria-label", target),
-                _css_attr("title", target),
                 _css_attr("name", target),
-                _css_attr("placeholder", target),
-            ]
-        )
-
-        # 4) Label->input XPath fallback (universal)
-        lit = _xpath_literal(target)
-        if action in ("input", "select"):
-            cands.extend(
-                [
-                    f"xpath=(//label[normalize-space(.)={lit}])[1]/following::input[1]",
-                    f"xpath=(//label[normalize-space(.)={lit}])[1]/following::textarea[1]",
-                    f"xpath=(//*[normalize-space(.)={lit}])[1]/following::input[1]",
-                ]
             )
 
-        # 5) Clickable ancestor (universal)
-        if action == "click":
-            cands.append(
-                f"xpath=(//*[contains(normalize-space(.), {lit})])[1]"
-                "/ancestor-or-self::*[self::a or self::button or @role='button' or @role='link' "
-                "or @role='menuitem' or @onclick or @tabindex='0'][1]"
+        # 3) Stable attribute candidates (universal)
+        if target:
+            candidates += _candidate_list(
+                _css_attr("data-testid", target),
+                _css_attr("data-test-id", target),
+                _css_attr("data-test", target),
+                _css_attr("id", target),
+                _css_attr("title", target),
+                _css_attr("aria-label", target),
             )
 
-        # 6) Text fallback (exact)
-        cands.append(_pw_text_exact(target))
+        # 4) Text candidates (click/assert)
+        # Use exact first, then loose
+        if action in ("click", "assert") and target:
+            candidates += _candidate_list(
+                _pw_text_exact(target),
+                _pw_text_loose(target),
+            )
 
-        cands = self._unique(cands)
-        return "\n\n".join(cands) if len(cands) > 1 else (cands[0] if cands else None)
+        # 5) When action is select, also include option candidates by value text
+        # NOTE: Selection execution should open the control and then click option.
+        # These candidates are for option rows/choices, used in overlay selection.
+        if action == "select" and value:
+            # Try roles commonly used for options
+            candidates += _candidate_list(
+                _role_selector("option", value),
+                _role_selector("row", value),
+                _role_selector("listitem", value),
+                _role_selector("menuitem", value),
+                _pw_text_loose(value),
+                f'css=[role="row"]:has-text("{_esc_text_value(value)}")',
+                f'css=[role="option"]:has-text("{_esc_text_value(value)}")',
+            )
+
+        # 6) Final fallback: XPath text contains (brittle but universal)
+        if target and action in ("click", "assert"):
+            xt = _xpath_literal(target)
+            candidates += _candidate_list(
+                f"xpath=//*[contains(normalize-space(.), {xt})][1]",
+            )
+
+        # Deduplicate while preserving order
+        seen = set()
+        uniq: List[str] = []
+        for c in candidates:
+            c = c.strip()
+            if not c:
+                continue
+            if c in seen:
+                continue
+            seen.add(c)
+            uniq.append(c)
+
+        return "\n\n".join(uniq)
