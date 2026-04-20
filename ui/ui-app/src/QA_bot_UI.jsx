@@ -898,7 +898,7 @@ function QABotUI() {
             <main className="chatgpt-main">
                 <header className="chatgpt-header">
                     <div className="header-title">QA Copilot</div>
-                    <div className="header-subtitle">Jira → BDD → Locator Details → Approval → Save</div>
+                    <div className="header-subtitle">LTM</div>
                 </header>
 
                 <section className="chatgpt-messages">
