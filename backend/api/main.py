@@ -165,6 +165,24 @@ def parse_description(desc: Optional[dict]) -> str:
     return _extract_adf_text(desc).strip()
 
 
+def _sanitize_rendered_html(html: str) -> str:
+    """
+    Minimal safety cleanup for Jira rendered HTML.
+    Jira renderedFields.description contains REAL HTML (not escaped).
+    """
+    if not html:
+        return ""
+
+    # Remove <script>...</script> blocks (real HTML)
+    html = re.sub(
+        r"<script\b[^<]*(?:(?!</script>)<[^<]*)*</script>",
+        "",
+        html,
+        flags=re.IGNORECASE,
+    )
+    return html
+
+
 def _extract_scenario_name(feature_text: str) -> Optional[str]:
     for line in feature_text.splitlines():
         if line.strip().lower().startswith("scenario:"):
@@ -359,25 +377,42 @@ def search_issue(req: SearchRequest):
     if not req.key:
         raise HTTPException(status_code=400, detail="Missing issue key")
 
-    url = _jira_url(f"/rest/api/3/issue/{req.key}")
-    resp = _get(url, params={"fields": "summary,description,assignee"})
+    issue_key = req.key.strip()
+    url = _jira_url(f"/rest/api/3/issue/{issue_key}")
+
+    # ✅ KEY CHANGE: expand=renderedFields to get HTML that matches Jira UI
+    params = {
+        "expand": "renderedFields",
+        # Keep payload light; Jira will still provide renderedFields.description
+        "fields": "summary,assignee,description",
+    }
+
+    resp = _get(url, params=params)
     if resp.status_code != 200:
         raise HTTPException(
-            status_code=400, detail=f"Failed to fetch issue: {resp.text}"
+            status_code=400, detail=f"Failed to fetch issue {issue_key}: {resp.text}"
         )
 
-    data = resp.json()
-    fields = data.get("fields", {}) or {}
-    assignee = fields.get("assignee") or {}
+    issue = resp.json()
+    fields = issue.get("fields", {}) or {}
+    rendered = issue.get("renderedFields", {}) or {}
+
+    summary = fields.get("summary") or ""
+    assignee_obj = fields.get("assignee") or {}
+    assignee = assignee_obj.get("displayName") or assignee_obj.get("name") or "-"
+
+    # Plain text (used by Refiner Agent payload later)
+    description_plain = parse_description(fields.get("description"))
+
+    # HTML (used by UI preview to match Jira)
+    description_html = _sanitize_rendered_html(rendered.get("description") or "")
+
     return {
-        "key": data.get("key", req.key),
-        "summary": fields.get("summary", ""),
-        "description": parse_description(fields.get("description")),
-        "assignee": assignee.get("displayName", "")
-        if isinstance(assignee, dict)
-        else "",
-        "project": req.project,
-        "sprint": req.sprint or "",
+        "key": issue.get("key", issue_key),
+        "summary": summary,
+        "assignee": assignee,
+        "description": description_plain,  # keep existing contract for agents
+        "description_html": description_html,  # NEW: exact Jira-like rendered view
     }
 
 
@@ -595,6 +630,18 @@ def generate_test_script(req: TestScriptGenerateRequest):
             script = result
 
         script = (script or "").strip()
+
+        # ✅ SAFETY: unwrap dict-like string if returned as text
+        if script.startswith("{") and "test_script" in script:
+            try:
+                parsed = ast.literal_eval(script)
+                if isinstance(parsed, dict) and isinstance(
+                    parsed.get("test_script"), str
+                ):
+                    script = parsed["test_script"].strip()
+            except Exception:
+                pass
+
         if not script:
             raise HTTPException(
                 status_code=500, detail="BlueVerse returned empty test_script"

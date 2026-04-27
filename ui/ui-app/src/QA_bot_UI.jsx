@@ -15,6 +15,21 @@ const STEPS = {
     REVIEW_LOCATORS: "REVIEW_LOCATORS",
 };
 
+/**
+ * ------------------------------
+ * Jira Description -> Readable Sections (Headers + Bullets)
+ * Goal:
+ *  - Even if Jira text is "dumped" (no bullets/headings), UI should show
+ *    clean sections and bullet points for readability.
+ * ------------------------------
+ */
+
+
+
+
+
+
+
 function QABotUI() {
     const userName = useMemo(() => "User", []);
     const bootstrappedRef = useRef(false);
@@ -228,14 +243,20 @@ function QABotUI() {
         }
     };
 
+    /**
+     * ✅ REFACTORED:
+     * Instead of pushing a dumped string into <pre>, we push structured data:
+     *  - metadata (title/key/assignee)
+     *  - sections with headers + bullet points
+     */
     const showStoryInfoCard = (data) => {
-        const info =
-            `Story Title: ${data.summary}\n` +
-            `Story description: ${data.description || "(no description)"}\n\n` +
-            `Story details:\n` +
-            `  story number: ${data.key}\n` +
-            `  Assigned to : ${data.assignee || "-"}`;
-        pushBotInfo("User Story Details:", info);
+        pushBotInfo("User Story Details:", {
+            summary: data?.summary || "",
+            key: data?.key || "",
+            assignee: data?.assignee || "-",
+            description: data?.description || "",
+            description_html: data?.description_html || "",
+        });
     };
 
     const loadStoryDetails = async (projectKey, sprintId, storyKey) => {
@@ -456,7 +477,6 @@ function QABotUI() {
             setLoading(false);
         }
     };
-
 
     const askGenerateLocatorDetails = async () => {
         setStep(STEPS.REVIEW_LOCATORS);
@@ -787,6 +807,7 @@ function QABotUI() {
                 return;
             }
         }
+
         if (kind === "review_test_script") {
             if (option.value === "APPROVE") {
                 // ✅ duplicate check happens here via backend save endpoint
@@ -803,6 +824,7 @@ function QABotUI() {
                 return;
             }
         }
+
         if (kind === "dup_test_script") {
             if (option.value === "REUSE") {
                 await saveTestScriptGoverned("reuse_existing");
@@ -818,13 +840,13 @@ function QABotUI() {
                 return;
             }
         }
+
         if (kind === "final_ok") {
             if (option.value === "OK") {
                 await resetConversation();
                 return;
             }
         }
-
     };
 
     const handleSend = async () => {
@@ -911,7 +933,34 @@ function QABotUI() {
                                 {msg.type === "info" && (
                                     <div className="info-box">
                                         <div className="info-title">{msg.title}</div>
-                                        <pre className="info-content">{msg.content}</pre>
+
+                                        {typeof msg.content === "object" && msg.content !== null ? (
+                                            <div className="info-content" style={{ whiteSpace: "normal" }}>
+                                                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                                    <div><strong>Story Title:</strong> {msg.content.summary || "-"}</div>
+                                                    <div><strong>Story Key:</strong> {msg.content.key || "-"}</div>
+                                                    <div><strong>Assigned To:</strong> {msg.content.assignee || "-"}</div>
+                                                </div>
+
+                                                <div style={{ marginTop: 12 }}>
+                                                    <div style={{ fontWeight: 700, marginBottom: 8 }}>Description</div>
+
+                                                    {/* ✅ Render Jira exactly like Jira UI (HTML) */}
+                                                    {msg.content.description_html ? (
+                                                        <div
+                                                            style={{ lineHeight: 1.6 }}
+                                                            dangerouslySetInnerHTML={{ __html: msg.content.description_html }}
+                                                        />
+                                                    ) : (
+                                                        <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+                                                            {msg.content.description || ""}
+                                                        </pre>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <pre className="info-content">{msg.content}</pre>
+                                        )}
                                     </div>
                                 )}
 
